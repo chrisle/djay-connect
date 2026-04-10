@@ -1,34 +1,74 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import createDatabase from 'better-sqlite3-multiple-ciphers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DjayConnect } from '../src/djayConnect';
+import {
+  HISTORY_ITEM_FIXTURES,
+  fixtureBuffer,
+} from './fixtures/historySessionItems';
 
-// Mock fs module
-vi.mock('fs', () => ({
-  existsSync: vi.fn(),
-  readFileSync: vi.fn(),
-}));
+/**
+ * Build a throwaway SQLite file with just enough of djay Pro's YapDatabase
+ * schema for DjayConnect to read, then seed it with the provided fixtures.
+ */
+function buildTestDatabase(
+  seedFixtures: typeof HISTORY_ITEM_FIXTURES,
+): { dbPath: string; cleanup: () => void; insertFixture: (fx: typeof HISTORY_ITEM_FIXTURES[number]) => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'djay-connect-test-'));
+  const dbPath = join(dir, 'MediaLibrary.db');
 
-import { existsSync, readFileSync } from 'fs';
+  const db = new createDatabase(dbPath);
+  db.exec(`
+    CREATE TABLE database2 (
+      rowid INTEGER PRIMARY KEY,
+      collection TEXT NOT NULL,
+      key TEXT NOT NULL,
+      data BLOB,
+      metadata BLOB
+    );
+  `);
 
-const mockExistsSync = vi.mocked(existsSync);
-const mockReadFileSync = vi.mocked(readFileSync);
+  const insert = db.prepare(
+    `INSERT INTO database2 (collection, key, data) VALUES (?, ?, ?)`,
+  );
+  for (const fx of seedFixtures) {
+    insert.run('historySessionItems', fx.key, fixtureBuffer(fx));
+  }
 
-const SAMPLE_NOWPLAYING = `Title: Echoes
-Artist: Pink Floyd
-Album: Meddle
-Time: 23:31`;
+  const insertFixture = (fx: typeof HISTORY_ITEM_FIXTURES[number]): void => {
+    insert.run('historySessionItems', fx.key, fixtureBuffer(fx));
+  };
+
+  const cleanup = (): void => {
+    try {
+      db.close();
+    } catch {
+      /* ignore */
+    }
+    rmSync(dir, { recursive: true, force: true });
+  };
+
+  return { dbPath, cleanup, insertFixture };
+}
 
 describe('DjayConnect', () => {
-  let djay: DjayConnect;
+  let djay: DjayConnect | undefined;
+  let testDb: ReturnType<typeof buildTestDatabase> | undefined;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    mockExistsSync.mockReturnValue(false);
-    mockReadFileSync.mockReturnValue('');
   });
 
   afterEach(() => {
     if (djay) {
       djay.stop();
+      djay = undefined;
+    }
+    if (testDb) {
+      testDb.cleanup();
+      testDb = undefined;
     }
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -37,42 +77,74 @@ describe('DjayConnect', () => {
   describe('constructor', () => {
     it('uses default configuration', () => {
       djay = new DjayConnect();
-      expect(djay.pollInterval).toBe(5000);
+      expect(djay.pollInterval).toBe(2000);
       expect(djay.running).toBe(false);
     });
 
     it('accepts custom poll interval', () => {
-      djay = new DjayConnect({ pollIntervalMs: 10000 });
-      expect(djay.pollInterval).toBe(10000);
+      djay = new DjayConnect({ pollIntervalMs: 10_000 });
+      expect(djay.pollInterval).toBe(10_000);
     });
 
     it('enforces minimum poll interval', () => {
-      djay = new DjayConnect({ pollIntervalMs: 1000 });
-      expect(djay.pollInterval).toBe(5000);
+      djay = new DjayConnect({ pollIntervalMs: 500 });
+      expect(djay.pollInterval).toBe(2000);
     });
 
-    it('accepts custom NowPlaying path', () => {
-      djay = new DjayConnect({ nowPlayingPath: '/custom/path/NowPlaying.txt' });
-      expect(djay.path).toBe('/custom/path/NowPlaying.txt');
+    it('accepts a custom database path', () => {
+      djay = new DjayConnect({ databasePath: '/tmp/custom/MediaLibrary.db' });
+      expect(djay.path).toBe('/tmp/custom/MediaLibrary.db');
     });
   });
 
   describe('start', () => {
-    it('emits ready event', () => {
-      djay = new DjayConnect();
+    it('emits ready with the database path', () => {
+      testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
       const readyHandler = vi.fn();
       djay.on('ready', readyHandler);
 
       djay.start();
 
       expect(djay.running).toBe(true);
-      expect(readyHandler).toHaveBeenCalledWith(
-        expect.objectContaining({ nowPlayingPath: expect.any(String) })
-      );
+      expect(readyHandler).toHaveBeenCalledWith({ databasePath: testDb.dbPath });
+    });
+
+    it('emits the most recent history item as the initial track', () => {
+      testDb = buildTestDatabase(HISTORY_ITEM_FIXTURES);
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
+      const trackHandler = vi.fn();
+      djay.on('track', trackHandler);
+
+      djay.start();
+
+      expect(trackHandler).toHaveBeenCalledTimes(1);
+      const lastFixture = HISTORY_ITEM_FIXTURES[HISTORY_ITEM_FIXTURES.length - 1];
+      expect(trackHandler).toHaveBeenCalledWith({
+        track: expect.objectContaining({
+          title: lastFixture.expected.title,
+          artist: lastFixture.expected.artist,
+          deckNumber: lastFixture.expected.deckNumber,
+          duration: lastFixture.expected.durationSeconds,
+          uuid: lastFixture.expected.uuid,
+        }),
+      });
+    });
+
+    it('emits an error if the database file is missing', () => {
+      djay = new DjayConnect({ databasePath: '/nonexistent/MediaLibrary.db' });
+      const errorHandler = vi.fn();
+      djay.on('error', errorHandler);
+
+      djay.start();
+
+      expect(errorHandler).toHaveBeenCalledTimes(1);
+      expect(djay.running).toBe(false);
     });
 
     it('does nothing if already running', () => {
-      djay = new DjayConnect();
+      testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
       const readyHandler = vi.fn();
       djay.on('ready', readyHandler);
 
@@ -81,193 +153,111 @@ describe('DjayConnect', () => {
 
       expect(readyHandler).toHaveBeenCalledTimes(1);
     });
+  });
 
-    it('emits initial track if NowPlaying.txt exists', () => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(SAMPLE_NOWPLAYING);
-
-      djay = new DjayConnect();
+  describe('polling', () => {
+    it('emits a track event when a new history row appears', () => {
+      testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
+      djay = new DjayConnect({
+        databasePath: testDb.dbPath,
+        pollIntervalMs: 2000,
+      });
       const trackHandler = vi.fn();
       djay.on('track', trackHandler);
 
       djay.start();
+      expect(trackHandler).toHaveBeenCalledTimes(1); // initial seed track
 
-      expect(trackHandler).toHaveBeenCalledWith({
-        track: {
-          title: 'Echoes',
-          artist: 'Pink Floyd',
-          album: 'Meddle',
-          time: '23:31',
-        },
+      // Simulate djay Pro adding a new track to the history.
+      testDb.insertFixture(HISTORY_ITEM_FIXTURES[1]);
+      vi.advanceTimersByTime(2000);
+
+      expect(trackHandler).toHaveBeenCalledTimes(2);
+      expect(trackHandler).toHaveBeenLastCalledWith({
+        track: expect.objectContaining({
+          title: HISTORY_ITEM_FIXTURES[1].expected.title,
+          deckNumber: HISTORY_ITEM_FIXTURES[1].expected.deckNumber,
+        }),
       });
     });
 
-    it('does not emit track if file does not exist', () => {
-      mockExistsSync.mockReturnValue(false);
-
-      djay = new DjayConnect();
+    it('does not re-emit previously seen tracks on subsequent polls', () => {
+      testDb = buildTestDatabase(HISTORY_ITEM_FIXTURES);
+      djay = new DjayConnect({
+        databasePath: testDb.dbPath,
+        pollIntervalMs: 2000,
+      });
       const trackHandler = vi.fn();
       djay.on('track', trackHandler);
 
       djay.start();
+      expect(trackHandler).toHaveBeenCalledTimes(1); // initial track only
 
-      expect(trackHandler).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(2000);
+
+      expect(trackHandler).toHaveBeenCalledTimes(1);
+    });
+
+    it('emits a poll event on each cycle', () => {
+      testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
+      djay = new DjayConnect({
+        databasePath: testDb.dbPath,
+        pollIntervalMs: 2000,
+      });
+      const pollHandler = vi.fn();
+      djay.on('poll', pollHandler);
+
+      djay.start();
+      vi.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(2000);
+
+      expect(pollHandler).toHaveBeenCalledTimes(2);
     });
   });
 
   describe('stop', () => {
-    it('stops polling and resets state', () => {
-      djay = new DjayConnect();
+    it('stops polling and closes the database', () => {
+      testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
       djay.start();
-
       expect(djay.running).toBe(true);
 
       djay.stop();
-
       expect(djay.running).toBe(false);
     });
 
     it('can be called when not running', () => {
       djay = new DjayConnect();
-      expect(() => djay.stop()).not.toThrow();
-    });
-  });
-
-  describe('polling', () => {
-    it('emits poll event on each cycle', () => {
-      djay = new DjayConnect({ pollIntervalMs: 5000 });
-      const pollHandler = vi.fn();
-      djay.on('poll', pollHandler);
-
-      djay.start();
-      vi.advanceTimersByTime(5000);
-
-      expect(pollHandler).toHaveBeenCalledTimes(1);
-    });
-
-    it('emits track event when track changes', () => {
-      mockExistsSync.mockReturnValue(false);
-
-      djay = new DjayConnect({ pollIntervalMs: 5000 });
-      const trackHandler = vi.fn();
-      djay.on('track', trackHandler);
-
-      djay.start();
-
-      // Simulate NowPlaying.txt appearing
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(SAMPLE_NOWPLAYING);
-
-      vi.advanceTimersByTime(5000);
-
-      expect(trackHandler).toHaveBeenCalledWith({
-        track: {
-          title: 'Echoes',
-          artist: 'Pink Floyd',
-          album: 'Meddle',
-          time: '23:31',
-        },
-      });
-    });
-
-    it('does not emit duplicate tracks', () => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(SAMPLE_NOWPLAYING);
-
-      djay = new DjayConnect({ pollIntervalMs: 5000 });
-      const trackHandler = vi.fn();
-      djay.on('track', trackHandler);
-
-      djay.start();
-      // Initial track emitted
-      expect(trackHandler).toHaveBeenCalledTimes(1);
-
-      // Same track on next poll
-      vi.advanceTimersByTime(5000);
-      expect(trackHandler).toHaveBeenCalledTimes(1);
-    });
-
-    it('emits new track when content changes', () => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(SAMPLE_NOWPLAYING);
-
-      djay = new DjayConnect({ pollIntervalMs: 5000 });
-      const trackHandler = vi.fn();
-      djay.on('track', trackHandler);
-
-      djay.start();
-      expect(trackHandler).toHaveBeenCalledTimes(1);
-
-      // Change to a new track
-      mockReadFileSync.mockReturnValue(`Title: Money
-Artist: Pink Floyd
-Album: The Dark Side of the Moon
-Time: 6:22`);
-
-      vi.advanceTimersByTime(5000);
-      expect(trackHandler).toHaveBeenCalledTimes(2);
-      expect(trackHandler).toHaveBeenLastCalledWith({
-        track: {
-          title: 'Money',
-          artist: 'Pink Floyd',
-          album: 'The Dark Side of the Moon',
-          time: '6:22',
-        },
-      });
-    });
-
-    it('emits error on parse failure', () => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockImplementation(() => {
-        throw new Error('Read failed');
-      });
-
-      djay = new DjayConnect({ pollIntervalMs: 5000 });
-      const errorHandler = vi.fn();
-      djay.on('error', errorHandler);
-
-      djay.start();
-      // Initial parse failure is caught internally (returns null), not emitted as error
-
-      // Force an error during poll by making existsSync throw
-      mockExistsSync.mockImplementation(() => {
-        throw new Error('FS error');
-      });
-
-      vi.advanceTimersByTime(5000);
-      expect(errorHandler).toHaveBeenCalled();
+      expect(() => djay!.stop()).not.toThrow();
     });
   });
 
   describe('setPollInterval', () => {
-    it('updates poll interval', () => {
-      djay = new DjayConnect({ pollIntervalMs: 5000 });
-      djay.setPollInterval(10000);
-      expect(djay.pollInterval).toBe(10000);
-    });
-
     it('enforces minimum interval', () => {
-      djay = new DjayConnect();
-      djay.setPollInterval(1000);
-      expect(djay.pollInterval).toBe(5000);
+      djay = new DjayConnect({ pollIntervalMs: 5000 });
+      djay.setPollInterval(500);
+      expect(djay.pollInterval).toBe(2000);
     });
 
-    it('restarts timer if running', () => {
-      djay = new DjayConnect({ pollIntervalMs: 5000 });
+    it('restarts the timer when running', () => {
+      testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
+      djay = new DjayConnect({
+        databasePath: testDb.dbPath,
+        pollIntervalMs: 2000,
+      });
       const pollHandler = vi.fn();
       djay.on('poll', pollHandler);
 
       djay.start();
+      djay.setPollInterval(5000);
 
-      // Change to 10s interval
-      djay.setPollInterval(10000);
-
-      // Advance by 5s - should NOT have polled yet (new interval is 10s)
-      vi.advanceTimersByTime(5000);
+      // After 2s under the old interval we would have seen a poll; with 5s we should not.
+      vi.advanceTimersByTime(2000);
       expect(pollHandler).not.toHaveBeenCalled();
 
-      // Advance another 5s (total 10s) - NOW it should poll
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(3000);
       expect(pollHandler).toHaveBeenCalledTimes(1);
     });
   });

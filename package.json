@@ -1,7 +1,7 @@
 {
   "name": "djay-connect",
-  "version": "1.0.0",
-  "description": "Library to read djay Pro's NowPlaying.txt file and emit track change events",
+  "version": "2.0.0",
+  "description": "Library to read djay Pro's MediaLibrary.db and emit track change events",
   "license": "MIT",
   "private": false,
   "type": "commonjs",
@@ -34,9 +34,11 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
+    "better-sqlite3-multiple-ciphers": "^11.7.1",
     "strict-event-emitter-types": "^2.0.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.15.29",
     "@vitest/coverage-v8": "^4.0.16",
     "prettier": "^3.5.3",
