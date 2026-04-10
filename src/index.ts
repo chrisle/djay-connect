@@ -20,9 +20,20 @@ export {
   extractString,
   extractDouble,
   extractDate,
+  extractTitleID,
+  extractSourceURIs,
   parseHistorySessionItem,
   type DjayHistoryItemFields,
 } from './tsaf.js';
+
+// Track-source constants and helpers
+export {
+  DJAY_SOURCES,
+  isStreamingSource,
+  toNowPlayingStreamingSource,
+  type DjayOriginSourceID,
+  type DjaySourceInfo,
+} from './sources.js';
 
 // Logger
 export type { Logger } from './types/logger.js';

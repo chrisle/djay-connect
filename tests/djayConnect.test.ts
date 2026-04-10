@@ -8,14 +8,26 @@ import {
   HISTORY_ITEM_FIXTURES,
   fixtureBuffer,
 } from './fixtures/historySessionItems';
+import {
+  LOCATION_FIXTURES,
+  locationBuffer,
+} from './fixtures/mediaItemLocations';
 
 /**
  * Build a throwaway SQLite file with just enough of djay Pro's YapDatabase
  * schema for DjayConnect to read, then seed it with the provided fixtures.
+ * Optionally seeds `localMediaItemLocations` / `globalMediaItemLocations`
+ * rows from LOCATION_FIXTURES so integration tests can exercise the
+ * titleID → filePath / sourceURIs join.
  */
 function buildTestDatabase(
   seedFixtures: typeof HISTORY_ITEM_FIXTURES,
-): { dbPath: string; cleanup: () => void; insertFixture: (fx: typeof HISTORY_ITEM_FIXTURES[number]) => void } {
+  options: { seedLocations?: boolean } = {},
+): {
+  dbPath: string;
+  cleanup: () => void;
+  insertFixture: (fx: typeof HISTORY_ITEM_FIXTURES[number]) => void;
+} {
   const dir = mkdtempSync(join(tmpdir(), 'djay-connect-test-'));
   const dbPath = join(dir, 'MediaLibrary.db');
 
@@ -35,6 +47,12 @@ function buildTestDatabase(
   );
   for (const fx of seedFixtures) {
     insert.run('historySessionItems', fx.key, fixtureBuffer(fx));
+  }
+
+  if (options.seedLocations) {
+    for (const loc of LOCATION_FIXTURES) {
+      insert.run(loc.collection, loc.key, locationBuffer(loc));
+    }
   }
 
   const insertFixture = (fx: typeof HISTORY_ITEM_FIXTURES[number]): void => {
@@ -231,6 +249,61 @@ describe('DjayConnect', () => {
     it('can be called when not running', () => {
       djay = new DjayConnect();
       expect(() => djay!.stop()).not.toThrow();
+    });
+  });
+
+  describe('location enrichment', () => {
+    it('resolves filePath for a local track', () => {
+      const localHistory = HISTORY_ITEM_FIXTURES.find(
+        (f) => f.expected.originSourceID === 'explorer',
+      )!;
+      testDb = buildTestDatabase([localHistory], { seedLocations: true });
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
+      const trackHandler = vi.fn();
+      djay.on('track', trackHandler);
+
+      djay.start();
+
+      expect(trackHandler).toHaveBeenCalledTimes(1);
+      const track = trackHandler.mock.calls[0][0].track;
+      expect(track.titleID).toBe('307b767ff2463cce064180664e6b4c89');
+      expect(track.sourceURIs).toHaveLength(1);
+      expect(track.sourceURIs?.[0]).toMatch(/^file:\/\//);
+      expect(track.filePath).toContain('Voodoo_People_(Pendulum_Mix).mp3');
+    });
+
+    it('exposes multiple sourceURIs for a multi-service streaming track', () => {
+      const goodCatch = HISTORY_ITEM_FIXTURES.find(
+        (f) => f.expected.title === 'Good Catch (Black Caviar Remix)',
+      )!;
+      testDb = buildTestDatabase([goodCatch], { seedLocations: true });
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
+      const trackHandler = vi.fn();
+      djay.on('track', trackHandler);
+
+      djay.start();
+
+      const track = trackHandler.mock.calls[0][0].track;
+      expect(track.sourceURIs).toEqual([
+        'soundcloud:tracks:1150488265',
+        'beatport:track:15949981',
+      ]);
+      expect(track.filePath).toBeUndefined();
+    });
+
+    it('emits the track unchanged when no location row is present', () => {
+      const anyHistory = HISTORY_ITEM_FIXTURES[0];
+      testDb = buildTestDatabase([anyHistory]); // no seedLocations
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
+      const trackHandler = vi.fn();
+      djay.on('track', trackHandler);
+
+      djay.start();
+
+      const track = trackHandler.mock.calls[0][0].track;
+      expect(track.sourceURIs).toBeUndefined();
+      expect(track.filePath).toBeUndefined();
+      expect(track.title).toBe(anyHistory.expected.title);
     });
   });
 

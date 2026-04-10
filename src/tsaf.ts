@@ -92,15 +92,52 @@ export function extractDate(blob: Buffer, key: string): Date | undefined {
   return new Date(CF_EPOCH_MS + cfAbsolute * 1000);
 }
 
+/**
+ * Extract the nested `ADCMediaItemTitleID` — the 32-hex string that joins a
+ * history item to its row in `localMediaItemLocations` / `globalMediaItemLocations`
+ * / `mediaItemTitleIDs` / `mediaItemAnalyzedData` etc.
+ *
+ * Inside a TSAF blob the nested class looks like:
+ *
+ *   `0x2B 0x08 'ADCMediaItemTitleID' 0x00 0x08 <32-hex chars> 0x00 ...`
+ *
+ * We locate the class marker and read the tagged string that immediately
+ * follows it.
+ */
+export function extractTitleID(blob: Buffer): string | undefined {
+  const marker = Buffer.concat([
+    Buffer.from([0x2b, 0x08]),
+    Buffer.from('ADCMediaItemTitleID', 'ascii'),
+    Buffer.from([0x00]),
+  ]);
+  const markerPos = blob.indexOf(marker);
+  if (markerPos < 0) return undefined;
+  const stringTagPos = markerPos + marker.length;
+  if (blob[stringTagPos] !== 0x08) return undefined;
+  const stringStart = stringTagPos + 1;
+  const stringEnd = blob.indexOf(0x00, stringStart);
+  if (stringEnd < 0) return undefined;
+  const candidate = blob.subarray(stringStart, stringEnd).toString('ascii');
+  // Sanity check: titleIDs are 32-char lowercase hex.
+  if (!/^[0-9a-f]{32}$/.test(candidate)) return undefined;
+  return candidate;
+}
+
 /** Shape of the fields we extract from a historySessionItems blob. */
 export interface DjayHistoryItemFields {
   uuid: string;
   sessionUUID: string;
+  /** 32-char hex titleID that joins into the location / analysis tables. */
+  titleID: string | undefined;
   title: string;
   artist: string;
   duration: number;
   deckNumber: number;
   startTime: Date;
+  /** djay Pro's source identifier (e.g. 'explorer', 'spotify', 'beatport'). */
+  originSourceID: string | undefined;
+  /** International Standard Recording Code — present on streaming tracks. */
+  isrc: string | undefined;
 }
 
 /**
@@ -116,18 +153,67 @@ export function parseHistorySessionItem(
 
   const uuid = extractString(blob, 'uuid') ?? '';
   const sessionUUID = extractString(blob, 'sessionUUID') ?? '';
+  const titleID = extractTitleID(blob);
   const duration = extractDouble(blob, 'duration') ?? 0;
   const deckRaw = extractDouble(blob, 'deckNumber') ?? 0;
   const deckNumber = Number.isFinite(deckRaw) ? Math.round(deckRaw) : 0;
   const startTime = extractDate(blob, 'startTime') ?? new Date(0);
+  const originSourceID = extractString(blob, 'originSourceID');
+  const isrc = extractString(blob, 'isrc');
 
   return {
     uuid,
     sessionUUID,
+    titleID,
     title,
     artist,
     duration,
     deckNumber,
     startTime,
+    originSourceID,
+    isrc,
   };
+}
+
+/**
+ * Extract the `sourceURIs` strings from a `localMediaItemLocations` or
+ * `globalMediaItemLocations` blob. A single location record can carry more
+ * than one URI — e.g. *Good Catch (Black Caviar Remix)* in the test session
+ * has both `soundcloud:tracks:1150488265` and `beatport:track:15949981`.
+ *
+ * Each URI is stored as a distinctive `0x21 0x08 <utf8 bytes> 0x00` sequence,
+ * wrapped in an array header `0x0B 0x00 0x00 <count> 0x00 0x00 0x00`. The
+ * array immediately precedes a `0x08 'sourceURIs' 0x00` key tag. Rather than
+ * fully decoding the array framing, we scan forward through the blob for any
+ * `0x21 0x08 <uri> 0x00` pattern that sits *before* the key and return all
+ * matches in order.
+ */
+export function extractSourceURIs(blob: Buffer): string[] {
+  const keyNeedle = Buffer.concat([
+    Buffer.from([0x08]),
+    Buffer.from('sourceURIs', 'ascii'),
+    Buffer.from([0x00]),
+  ]);
+  const keyPos = blob.indexOf(keyNeedle);
+  if (keyPos < 0) return [];
+
+  const uris: string[] = [];
+  const window = blob.subarray(0, keyPos);
+  // Each element starts with `0x21 0x08 <utf8 bytes> 0x00`. Scan for the
+  // two-byte prefix, then read until the next 0x00.
+  for (let i = 0; i < window.length - 2; i++) {
+    if (window[i] !== 0x21 || window[i + 1] !== 0x08) continue;
+    const stringStart = i + 2;
+    const stringEnd = window.indexOf(0x00, stringStart);
+    if (stringEnd < 0) break;
+    const candidate = window.subarray(stringStart, stringEnd).toString('utf-8');
+    // Must look like a URI — contain a scheme colon and be at least 5 chars.
+    if (candidate.length < 5 || candidate.indexOf(':') <= 0) {
+      i = stringEnd;
+      continue;
+    }
+    uris.push(candidate);
+    i = stringEnd;
+  }
+  return uris;
 }

@@ -13,13 +13,47 @@ import createDatabase, {
   type Database as BetterSqliteDatabase,
 } from 'better-sqlite3-multiple-ciphers';
 import { getDefaultDatabasePath } from './detect.js';
-import { parseHistorySessionItem, type DjayHistoryItemFields } from './tsaf.js';
+import {
+  extractSourceURIs,
+  parseHistorySessionItem,
+  type DjayHistoryItemFields,
+} from './tsaf.js';
 import { type Logger, noopLogger } from './types/logger.js';
 import type {
   DjayConnectOptions,
   DjayNowPlayingTrack,
   TypedEmitter,
 } from './types.js';
+
+interface LocationRow {
+  collection: 'localMediaItemLocations' | 'globalMediaItemLocations';
+  data: Buffer;
+}
+
+/**
+ * Decode a djay file:// URI into an absolute OS path.
+ * djay URL-encodes backslashes (`%5C`) and spaces (`%20`) on Windows.
+ */
+function fileUriToPath(uri: string): string | undefined {
+  if (!uri.startsWith('file://')) return undefined;
+  // Strip the scheme + the authority slashes; on Windows the authority is
+  // empty and the path begins with a drive letter, e.g. "file:///D:%5C..."
+  let path = uri.slice('file://'.length);
+  if (path.startsWith('/') && /^\/[A-Za-z]:/.test(path)) {
+    path = path.slice(1);
+  }
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    return undefined;
+  }
+  // On Windows, normalize forward slashes that came from URL decoding into
+  // backslashes so the path is usable by fs.readFile etc.
+  if (process.platform === 'win32') {
+    path = path.replace(/\//g, '\\');
+  }
+  return path;
+}
 
 const MIN_POLL_INTERVAL = 2000;
 const DEFAULT_POLL_INTERVAL = 2000;
@@ -200,7 +234,7 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
 
   private toTrack(fields: DjayHistoryItemFields): DjayNowPlayingTrack | null {
     if (!fields.title && !fields.artist) return null;
-    return {
+    const track: DjayNowPlayingTrack = {
       title: fields.title,
       artist: fields.artist,
       duration: fields.duration,
@@ -208,6 +242,55 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
       startTime: fields.startTime,
       uuid: fields.uuid,
       sessionUUID: fields.sessionUUID,
+      titleID: fields.titleID,
+      originSourceID: fields.originSourceID,
+      isrc: fields.isrc,
     };
+
+    // Enrich with location data (file path or streaming URIs) when we can
+    // resolve the titleID against the *MediaItemLocations collections.
+    if (fields.titleID) {
+      const uris = this.readSourceURIs(fields.titleID);
+      if (uris.length > 0) {
+        track.sourceURIs = uris;
+        for (const uri of uris) {
+          if (uri.startsWith('file://')) {
+            const decoded = fileUriToPath(uri);
+            if (decoded) {
+              track.filePath = decoded;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    return track;
+  }
+
+  /**
+   * Look up the raw `sourceURIs` for a titleID. Local files live in
+   * `localMediaItemLocations`, streaming tracks in `globalMediaItemLocations`.
+   * Returns every URI recorded for the track — can be empty, one, or many.
+   */
+  private readSourceURIs(titleID: string): string[] {
+    if (!this.db) return [];
+    try {
+      const row = this.db
+        .prepare<[string], LocationRow>(
+          `SELECT collection, data
+             FROM database2
+            WHERE collection IN ('localMediaItemLocations','globalMediaItemLocations')
+              AND key = ?`,
+        )
+        .get(titleID);
+      if (!row) return [];
+      return extractSourceURIs(row.data);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to resolve location for titleID ${titleID}: ${String(err)}`,
+      );
+      return [];
+    }
   }
 }

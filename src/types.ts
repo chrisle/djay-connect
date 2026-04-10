@@ -32,6 +32,32 @@ export interface DjayNowPlayingTrack {
   uuid: string;
   /** UUID of the containing history session */
   sessionUUID: string;
+  /**
+   * 32-hex `titleID` that joins the track to the location / analysis tables.
+   * Present for every track but may be missing on malformed blobs.
+   */
+  titleID?: string;
+  /**
+   * djay Pro's originSourceID for this track — identifies where the track
+   * came from. Known values include local sources (`explorer`, `music`)
+   * and streaming services (`beatport`, `beatsource`, `soundcloud`,
+   * `spotify`, `tidal`, `applemusic`).
+   */
+  originSourceID?: string;
+  /** International Standard Recording Code — present on streaming tracks. */
+  isrc?: string;
+  /**
+   * Absolute file path for tracks that live on local disk. Decoded from
+   * djay's URL-encoded `file://` URIs in `localMediaItemLocations`.
+   * Undefined for streaming tracks.
+   */
+  filePath?: string;
+  /**
+   * Raw `sourceURIs` from djay's location tables. Can contain more than one
+   * URI for tracks available on multiple streaming services, and the single
+   * `file://` URI for local tracks. Never undefined — empty array instead.
+   */
+  sourceURIs?: string[];
 }
 
 /**
