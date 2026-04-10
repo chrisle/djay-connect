@@ -1,6 +1,7 @@
 # djay-connect
 
-Library to read algoriddim djay Pro's NowPlaying.txt file and emit track change events.
+Library to read djay Pro's `MediaLibrary.db` and emit track change events.
+Supports djay Pro on macOS and Windows.
 
 ## Installation
 
@@ -14,15 +15,18 @@ npm install djay-connect
 import { DjayConnect } from 'djay-connect';
 
 const djay = new DjayConnect({
-  pollIntervalMs: 5000,
+  pollIntervalMs: 2000,
 });
 
 djay.on('ready', (info) => {
-  console.log(`Watching: ${info.nowPlayingPath}`);
+  console.log(`Watching: ${info.databasePath}`);
 });
 
 djay.on('track', (payload) => {
-  console.log(`Now playing: ${payload.track.artist} - ${payload.track.title}`);
+  const { track } = payload;
+  console.log(`Now playing: ${track.artist} - ${track.title} [deck ${track.deckNumber}]`);
+  if (track.filePath) console.log(`File: ${track.filePath}`);
+  if (track.originSourceID) console.log(`Source: ${track.originSourceID}`);
 });
 
 djay.on('error', (err) => {
@@ -39,9 +43,24 @@ djay.stop();
 
 ### `new DjayConnect(options?)`
 
-- `pollIntervalMs` — Polling interval in milliseconds (minimum 5000, default 5000)
-- `nowPlayingPath` — Custom path to NowPlaying.txt (default: `~/Music/djay/djay Media Library.djayMediaLibrary/NowPlaying.txt`)
+- `pollIntervalMs` — Polling interval in milliseconds (minimum 2000, default 2000)
+- `databasePath` — Custom path to `MediaLibrary.db`. If omitted, uses the default per-platform path.
 - `logger` — Logger instance implementing `{ trace, debug, info, warn, error }`
+
+### Track fields
+
+Every `track` event carries a `DjayNowPlayingTrack` with:
+
+- `title`, `artist`, `duration`, `deckNumber`, `startTime`
+- `uuid`, `sessionUUID` — history entry and session identifiers
+- `titleID` — 32-hex id joining the track to location and analysis tables
+- `originSourceID` — where the track came from (`explorer`, `music`, `beatport`,
+  `soundcloud`, `spotify`, `tidal`, `beatsource`, `applemusic`)
+- `isrc` — International Standard Recording Code (streaming tracks)
+- `filePath` — absolute path for local files, decoded from djay's URL-encoded
+  `file://` URIs
+- `sourceURIs` — raw source URIs; may contain multiple entries when a track is
+  available on more than one streaming service
 
 ### Events
 
@@ -50,11 +69,31 @@ djay.stop();
 - `track` — Emitted when a new track is detected
 - `error` — Emitted on errors
 
-### Detection Utilities
+### Detection utilities
 
-- `getDefaultNowPlayingPath()` — Returns the default NowPlaying.txt path
-- `getDefaultDjayInstallPath()` — Returns the default djay install path
-- `detectDjayInstallation()` — Checks if djay Pro is installed
+- `getDefaultDjayInstallPath()` — Returns the default djay Pro data folder
+- `getDefaultDatabasePath()` — Returns the default `MediaLibrary.db` path for
+  the current platform
+- `getDefaultDatabasePaths()` — Returns all candidate paths for the current
+  platform
+- `detectDjayInstallation()` — Checks whether djay Pro is installed
+
+### Source helpers
+
+- `DJAY_SOURCES` — Catalog of every known `originSourceID` with `kind`,
+  `label`, and URI scheme prefix
+- `isStreamingSource(id)` — True if the given source is a streaming service
+- `toNowPlayingStreamingSource(id)` — Maps a djay Pro source to the
+  nowplaying streaming enum
+
+### TSAF parser (advanced)
+
+- `parseHistorySessionItem(blob)` — Parse a raw `historySessionItems` BLOB
+- `extractTitleID(blob)` — Extract the nested `ADCMediaItemTitleID`
+- `extractSourceURIs(blob)` — Extract all source URIs from a location blob
+- `extractString`, `extractDouble`, `extractDate` — Low-level field readers
+
+See [`docs/FORMAT.md`](docs/FORMAT.md) for the full on-disk format reference.
 
 ## License
 
