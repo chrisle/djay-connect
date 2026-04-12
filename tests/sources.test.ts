@@ -7,7 +7,7 @@ import {
 
 describe('sources', () => {
   describe('DJAY_SOURCES catalog', () => {
-    it('includes all 6 advertised djay Pro streaming services plus local sources', () => {
+    it('includes all advertised djay Pro streaming services plus local sources', () => {
       const ids = Object.keys(DJAY_SOURCES).sort();
       expect(ids).toEqual(
         [
@@ -19,6 +19,7 @@ describe('sources', () => {
           'soundcloud',
           'spotify',
           'tidal',
+          'youtube',
         ].sort(),
       );
     });
@@ -51,6 +52,7 @@ describe('sources', () => {
       expect(isStreamingSource('spotify')).toBe(true);
       expect(isStreamingSource('tidal')).toBe(true);
       expect(isStreamingSource('applemusic')).toBe(true);
+      expect(isStreamingSource('youtube')).toBe(true);
     });
 
     it('returns false for local sources', () => {
@@ -76,6 +78,7 @@ describe('sources', () => {
       expect(toNowPlayingStreamingSource('spotify')).toBe('streaming-direct-play');
       expect(toNowPlayingStreamingSource('beatsource')).toBe('streaming-direct-play');
       expect(toNowPlayingStreamingSource('applemusic')).toBe('streaming-direct-play');
+      expect(toNowPlayingStreamingSource('youtube')).toBe('streaming-direct-play');
     });
 
     it('returns undefined for local sources', () => {

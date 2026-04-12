@@ -44,6 +44,40 @@ describe('tsaf', () => {
       const emptyBlob = Buffer.from('TSAFnothinguseful');
       expect(parseHistorySessionItem(emptyBlob)).toBeNull();
     });
+
+    it('parses a track with title but no artist (e.g. YouTube video)', () => {
+      // Build a minimal TSAF blob containing only a title field, no artist.
+      // TSAF value format: 0x08 <utf8-string> 0x00  then  0x08 <key> 0x00
+      const titleValue = 'Daft Punk - Get Lucky (Official Video)';
+      const titleField = Buffer.concat([
+        Buffer.from([0x08]),
+        Buffer.from(titleValue, 'utf-8'),
+        Buffer.from([0x00]),
+        Buffer.from([0x08]),
+        Buffer.from('title', 'ascii'),
+        Buffer.from([0x00]),
+      ]);
+      const parsed = parseHistorySessionItem(titleField);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.title).toBe(titleValue);
+      expect(parsed!.artist).toBe('');
+    });
+
+    it('parses a track with artist but no title', () => {
+      const artistValue = 'Daft Punk';
+      const artistField = Buffer.concat([
+        Buffer.from([0x08]),
+        Buffer.from(artistValue, 'utf-8'),
+        Buffer.from([0x00]),
+        Buffer.from([0x08]),
+        Buffer.from('artist', 'ascii'),
+        Buffer.from([0x00]),
+      ]);
+      const parsed = parseHistorySessionItem(artistField);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.artist).toBe(artistValue);
+      expect(parsed!.title).toBe('');
+    });
   });
 
   describe('extractString', () => {

@@ -20,7 +20,8 @@ export type DjayOriginSourceID =
   | 'soundcloud'
   | 'spotify'
   | 'tidal'
-  | 'applemusic';
+  | 'applemusic'
+  | 'youtube';
 
 export interface DjaySourceInfo {
   /** The originSourceID string as written by djay Pro. */
@@ -97,6 +98,13 @@ export const DJAY_SOURCES: Record<DjayOriginSourceID, DjaySourceInfo> = {
     label: 'Apple Music',
     uriSchemePrefix: 'applemusic:track:',
   },
+  youtube: {
+    id: 'youtube',
+    observed: false,
+    kind: 'streaming',
+    label: 'YouTube',
+    uriSchemePrefix: 'youtube:video:',
+  },
 };
 
 /**
@@ -135,6 +143,7 @@ export function toNowPlayingStreamingSource(
     case 'spotify':
     case 'beatsource':
     case 'applemusic':
+    case 'youtube':
       return 'streaming-direct-play';
     default:
       return undefined;
