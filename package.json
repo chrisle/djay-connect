@@ -3,6 +3,14 @@
   "version": "2.0.0",
   "description": "Library to read djay Pro's MediaLibrary.db and emit track change events",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chrisle/djay-connect.git"
+  },
+  "homepage": "https://github.com/chrisle/djay-connect",
+  "bugs": {
+    "url": "https://github.com/chrisle/djay-connect/issues"
+  },
   "private": false,
   "type": "commonjs",
   "main": "dist/index.js",
