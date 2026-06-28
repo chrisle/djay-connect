@@ -7,26 +7,26 @@
  * `track` events as they arrive. The same schema is used on macOS and Windows.
  */
 
-import EventEmitter from 'node:events';
-import { existsSync } from 'node:fs';
+import EventEmitter from "node:events";
+import { existsSync } from "node:fs";
 import createDatabase, {
   type Database as BetterSqliteDatabase,
-} from 'better-sqlite3-multiple-ciphers';
-import { getDefaultDatabasePath } from './detect.js';
+} from "better-sqlite3-multiple-ciphers";
+import { getDefaultDatabasePath } from "./detect.js";
 import {
   extractSourceURIs,
   parseHistorySessionItem,
   type DjayHistoryItemFields,
-} from './tsaf.js';
-import { type Logger, noopLogger } from './types/logger.js';
+} from "./tsaf.js";
+import { type Logger, noopLogger } from "./types/logger.js";
 import type {
   DjayConnectOptions,
   DjayNowPlayingTrack,
   TypedEmitter,
-} from './types.js';
+} from "./types.js";
 
 interface LocationRow {
-  collection: 'localMediaItemLocations' | 'globalMediaItemLocations';
+  collection: "localMediaItemLocations" | "globalMediaItemLocations";
   data: Buffer;
 }
 
@@ -35,11 +35,11 @@ interface LocationRow {
  * djay URL-encodes backslashes (`%5C`) and spaces (`%20`) on Windows.
  */
 function fileUriToPath(uri: string): string | undefined {
-  if (!uri.startsWith('file://')) return undefined;
+  if (!uri.startsWith("file://")) return undefined;
   // Strip the scheme + the authority slashes; on Windows the authority is
   // empty and the path begins with a drive letter, e.g. "file:///D:%5C..."
-  let path = uri.slice('file://'.length);
-  if (path.startsWith('/') && /^\/[A-Za-z]:/.test(path)) {
+  let path = uri.slice("file://".length);
+  if (path.startsWith("/") && /^\/[A-Za-z]:/.test(path)) {
     path = path.slice(1);
   }
   try {
@@ -49,8 +49,8 @@ function fileUriToPath(uri: string): string | undefined {
   }
   // On Windows, normalize forward slashes that came from URL decoding into
   // backslashes so the path is usable by fs.readFile etc.
-  if (process.platform === 'win32') {
-    path = path.replace(/\//g, '\\');
+  if (process.platform === "win32") {
+    path = path.replace(/\//g, "\\");
   }
   return path;
 }
@@ -96,25 +96,34 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
       this.openDatabase();
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      this.logger.error('Failed to open djay Pro database: %s', error.message);
-      this.emit('error', error);
+      this.logger.error("Failed to open djay Pro database: %s", error.message);
+      this.emit("error", error);
       return;
     }
 
     this.isRunning = true;
     this.logger.info(`Watching djay Pro library at ${this.databasePath}`);
-    this.emit('ready', { databasePath: this.databasePath });
+    this.emit("ready", { databasePath: this.databasePath });
 
-    // Seed cursor with the most-recent row and emit it as the initial "current" track.
+    // Pin the poll cursor to the highest existing rowid BEFORE anything else.
+    // Using a dedicated MAX(rowid) query (rather than inferring it from the
+    // parsed latest row) guarantees the cursor is seeded even when the most
+    // recent row fails to parse — otherwise lastRowId would stay 0 and the very
+    // first poll would replay the entire history backlog as if every old track
+    // were playing right now.
+    this.lastRowId = this.readMaxHistoryRowId();
+
+    // Emit the most-recent row as the initial "current" track, flagged with
+    // `isInitial` so consumers can tell it apart from live plays: it is whatever
+    // was already in djay Pro's history when monitoring began, not a new play.
     const initial = this.readLatestHistoryItem();
     if (initial) {
-      this.lastRowId = initial.rowid;
       const track = this.toTrack(initial.fields);
       if (track) {
         this.logger.debug(
           `Initial track: ${track.artist} - ${track.title} [deck ${track.deckNumber}]`,
         );
-        this.emit('track', { track });
+        this.emit("track", { track, isInitial: true });
       }
     }
 
@@ -130,13 +139,13 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
       try {
         this.db.close();
       } catch (err) {
-        this.logger.warn('Error closing database: %s', String(err));
+        this.logger.warn("Error closing database: %s", String(err));
       }
       this.db = null;
     }
     this.lastRowId = 0;
     this.isRunning = false;
-    this.logger.debug('Stopped');
+    this.logger.debug("Stopped");
   }
 
   get running(): boolean {
@@ -174,13 +183,13 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
     // djay Pro keeps the database in WAL mode while running. Enabling
     // read_uncommitted lets us observe writes that haven't been checkpointed
     // yet, so new history rows appear in near real time.
-    this.db.pragma('read_uncommitted = true');
+    this.db.pragma("read_uncommitted = true");
   }
 
   private poll(): void {
     if (!this.db) return;
     try {
-      this.emit('poll');
+      this.emit("poll");
 
       const rows = this.db
         .prepare<[number], HistoryRow>(
@@ -206,16 +215,37 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
         this.logger.debug(
           `New track: ${track.artist} - ${track.title} [deck ${track.deckNumber}]`,
         );
-        this.emit('track', { track });
+        this.emit("track", { track });
       }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      this.logger.error('Poll error: %s', error.message);
-      this.emit('error', error);
+      this.logger.error("Poll error: %s", error.message);
+      this.emit("error", error);
     }
   }
 
-  private readLatestHistoryItem(): { rowid: number; fields: DjayHistoryItemFields } | null {
+  /**
+   * Return the highest rowid currently present in `historySessionItems`, or 0
+   * when the collection is empty. Used to pin the poll cursor at start() so
+   * pre-existing history is never replayed as live playback — even when the
+   * latest row's blob fails to parse.
+   */
+  private readMaxHistoryRowId(): number {
+    if (!this.db) return 0;
+    const row = this.db
+      .prepare<[], { maxRowId: number | null }>(
+        `SELECT MAX(rowid) AS maxRowId
+           FROM database2
+          WHERE collection = 'historySessionItems'`,
+      )
+      .get();
+    return row?.maxRowId ?? 0;
+  }
+
+  private readLatestHistoryItem(): {
+    rowid: number;
+    fields: DjayHistoryItemFields;
+  } | null {
     if (!this.db) return null;
     const row = this.db
       .prepare<[], HistoryRow>(
@@ -254,7 +284,7 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
       if (uris.length > 0) {
         track.sourceURIs = uris;
         for (const uri of uris) {
-          if (uri.startsWith('file://')) {
+          if (uri.startsWith("file://")) {
             const decoded = fileUriToPath(uri);
             if (decoded) {
               track.filePath = decoded;

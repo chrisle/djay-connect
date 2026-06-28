@@ -1,17 +1,17 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import createDatabase from 'better-sqlite3-multiple-ciphers';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DjayConnect } from '../src/djayConnect';
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import createDatabase from "better-sqlite3-multiple-ciphers";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DjayConnect } from "../src/djayConnect";
 import {
   HISTORY_ITEM_FIXTURES,
   fixtureBuffer,
-} from './fixtures/historySessionItems';
+} from "./fixtures/historySessionItems";
 import {
   LOCATION_FIXTURES,
   locationBuffer,
-} from './fixtures/mediaItemLocations';
+} from "./fixtures/mediaItemLocations";
 
 /**
  * Build a throwaway SQLite file with just enough of djay Pro's YapDatabase
@@ -26,10 +26,10 @@ function buildTestDatabase(
 ): {
   dbPath: string;
   cleanup: () => void;
-  insertFixture: (fx: typeof HISTORY_ITEM_FIXTURES[number]) => void;
+  insertFixture: (fx: (typeof HISTORY_ITEM_FIXTURES)[number]) => void;
 } {
-  const dir = mkdtempSync(join(tmpdir(), 'djay-connect-test-'));
-  const dbPath = join(dir, 'MediaLibrary.db');
+  const dir = mkdtempSync(join(tmpdir(), "djay-connect-test-"));
+  const dbPath = join(dir, "MediaLibrary.db");
 
   const db = new createDatabase(dbPath);
   db.exec(`
@@ -46,7 +46,7 @@ function buildTestDatabase(
     `INSERT INTO database2 (collection, key, data) VALUES (?, ?, ?)`,
   );
   for (const fx of seedFixtures) {
-    insert.run('historySessionItems', fx.key, fixtureBuffer(fx));
+    insert.run("historySessionItems", fx.key, fixtureBuffer(fx));
   }
 
   if (options.seedLocations) {
@@ -55,8 +55,8 @@ function buildTestDatabase(
     }
   }
 
-  const insertFixture = (fx: typeof HISTORY_ITEM_FIXTURES[number]): void => {
-    insert.run('historySessionItems', fx.key, fixtureBuffer(fx));
+  const insertFixture = (fx: (typeof HISTORY_ITEM_FIXTURES)[number]): void => {
+    insert.run("historySessionItems", fx.key, fixtureBuffer(fx));
   };
 
   const cleanup = (): void => {
@@ -71,7 +71,7 @@ function buildTestDatabase(
   return { dbPath, cleanup, insertFixture };
 }
 
-describe('DjayConnect', () => {
+describe("DjayConnect", () => {
   let djay: DjayConnect | undefined;
   let testDb: ReturnType<typeof buildTestDatabase> | undefined;
 
@@ -92,52 +92,55 @@ describe('DjayConnect', () => {
     vi.restoreAllMocks();
   });
 
-  describe('constructor', () => {
-    it('uses default configuration', () => {
+  describe("constructor", () => {
+    it("uses default configuration", () => {
       djay = new DjayConnect();
       expect(djay.pollInterval).toBe(2000);
       expect(djay.running).toBe(false);
     });
 
-    it('accepts custom poll interval', () => {
+    it("accepts custom poll interval", () => {
       djay = new DjayConnect({ pollIntervalMs: 10_000 });
       expect(djay.pollInterval).toBe(10_000);
     });
 
-    it('enforces minimum poll interval', () => {
+    it("enforces minimum poll interval", () => {
       djay = new DjayConnect({ pollIntervalMs: 500 });
       expect(djay.pollInterval).toBe(2000);
     });
 
-    it('accepts a custom database path', () => {
-      djay = new DjayConnect({ databasePath: '/tmp/custom/MediaLibrary.db' });
-      expect(djay.path).toBe('/tmp/custom/MediaLibrary.db');
+    it("accepts a custom database path", () => {
+      djay = new DjayConnect({ databasePath: "/tmp/custom/MediaLibrary.db" });
+      expect(djay.path).toBe("/tmp/custom/MediaLibrary.db");
     });
   });
 
-  describe('start', () => {
-    it('emits ready with the database path', () => {
+  describe("start", () => {
+    it("emits ready with the database path", () => {
       testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
       djay = new DjayConnect({ databasePath: testDb.dbPath });
       const readyHandler = vi.fn();
-      djay.on('ready', readyHandler);
+      djay.on("ready", readyHandler);
 
       djay.start();
 
       expect(djay.running).toBe(true);
-      expect(readyHandler).toHaveBeenCalledWith({ databasePath: testDb.dbPath });
+      expect(readyHandler).toHaveBeenCalledWith({
+        databasePath: testDb.dbPath,
+      });
     });
 
-    it('emits the most recent history item as the initial track', () => {
+    it("emits the most recent history item as the initial track", () => {
       testDb = buildTestDatabase(HISTORY_ITEM_FIXTURES);
       djay = new DjayConnect({ databasePath: testDb.dbPath });
       const trackHandler = vi.fn();
-      djay.on('track', trackHandler);
+      djay.on("track", trackHandler);
 
       djay.start();
 
       expect(trackHandler).toHaveBeenCalledTimes(1);
-      const lastFixture = HISTORY_ITEM_FIXTURES[HISTORY_ITEM_FIXTURES.length - 1];
+      const lastFixture =
+        HISTORY_ITEM_FIXTURES[HISTORY_ITEM_FIXTURES.length - 1];
       expect(trackHandler).toHaveBeenCalledWith({
         track: expect.objectContaining({
           title: lastFixture.expected.title,
@@ -146,13 +149,59 @@ describe('DjayConnect', () => {
           duration: lastFixture.expected.durationSeconds,
           uuid: lastFixture.expected.uuid,
         }),
+        isInitial: true,
       });
     });
 
-    it('emits an error if the database file is missing', () => {
-      djay = new DjayConnect({ databasePath: '/nonexistent/MediaLibrary.db' });
+    it("flags the seed track with isInitial so consumers can skip it", () => {
+      testDb = buildTestDatabase(HISTORY_ITEM_FIXTURES);
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
+      const trackHandler = vi.fn();
+      djay.on("track", trackHandler);
+
+      djay.start();
+
+      expect(trackHandler).toHaveBeenCalledTimes(1);
+      expect(trackHandler.mock.calls[0][0].isInitial).toBe(true);
+    });
+
+    it("pins the poll cursor to MAX(rowid) even when the latest row is unparseable", () => {
+      // Without a MAX(rowid) cursor seed, a final unparseable row would leave
+      // lastRowId at 0 and the first poll would replay the entire backlog.
+      testDb = buildTestDatabase(HISTORY_ITEM_FIXTURES);
+      const raw = new createDatabase(testDb.dbPath);
+      raw
+        .prepare(
+          `INSERT INTO database2 (collection, key, data) VALUES (?, ?, ?)`,
+        )
+        .run(
+          "historySessionItems",
+          "junk-key",
+          Buffer.from([0x00, 0x01, 0x02]),
+        );
+      raw.close();
+
+      djay = new DjayConnect({
+        databasePath: testDb.dbPath,
+        pollIntervalMs: 2000,
+      });
+      const trackHandler = vi.fn();
+      djay.on("track", trackHandler);
+
+      djay.start();
+      // Latest row is unparseable, so there is no seed track to emit.
+      expect(trackHandler).not.toHaveBeenCalled();
+
+      // The cursor was still pinned to the junk row's rowid, so the first poll
+      // replays nothing from the existing history.
+      vi.advanceTimersByTime(2000);
+      expect(trackHandler).not.toHaveBeenCalled();
+    });
+
+    it("emits an error if the database file is missing", () => {
+      djay = new DjayConnect({ databasePath: "/nonexistent/MediaLibrary.db" });
       const errorHandler = vi.fn();
-      djay.on('error', errorHandler);
+      djay.on("error", errorHandler);
 
       djay.start();
 
@@ -160,11 +209,11 @@ describe('DjayConnect', () => {
       expect(djay.running).toBe(false);
     });
 
-    it('does nothing if already running', () => {
+    it("does nothing if already running", () => {
       testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
       djay = new DjayConnect({ databasePath: testDb.dbPath });
       const readyHandler = vi.fn();
-      djay.on('ready', readyHandler);
+      djay.on("ready", readyHandler);
 
       djay.start();
       djay.start();
@@ -173,15 +222,15 @@ describe('DjayConnect', () => {
     });
   });
 
-  describe('polling', () => {
-    it('emits a track event when a new history row appears', () => {
+  describe("polling", () => {
+    it("emits a track event when a new history row appears", () => {
       testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
       djay = new DjayConnect({
         databasePath: testDb.dbPath,
         pollIntervalMs: 2000,
       });
       const trackHandler = vi.fn();
-      djay.on('track', trackHandler);
+      djay.on("track", trackHandler);
 
       djay.start();
       expect(trackHandler).toHaveBeenCalledTimes(1); // initial seed track
@@ -199,14 +248,14 @@ describe('DjayConnect', () => {
       });
     });
 
-    it('does not re-emit previously seen tracks on subsequent polls', () => {
+    it("does not re-emit previously seen tracks on subsequent polls", () => {
       testDb = buildTestDatabase(HISTORY_ITEM_FIXTURES);
       djay = new DjayConnect({
         databasePath: testDb.dbPath,
         pollIntervalMs: 2000,
       });
       const trackHandler = vi.fn();
-      djay.on('track', trackHandler);
+      djay.on("track", trackHandler);
 
       djay.start();
       expect(trackHandler).toHaveBeenCalledTimes(1); // initial track only
@@ -218,14 +267,14 @@ describe('DjayConnect', () => {
       expect(trackHandler).toHaveBeenCalledTimes(1);
     });
 
-    it('emits a poll event on each cycle', () => {
+    it("emits a poll event on each cycle", () => {
       testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
       djay = new DjayConnect({
         databasePath: testDb.dbPath,
         pollIntervalMs: 2000,
       });
       const pollHandler = vi.fn();
-      djay.on('poll', pollHandler);
+      djay.on("poll", pollHandler);
 
       djay.start();
       vi.advanceTimersByTime(2000);
@@ -235,8 +284,8 @@ describe('DjayConnect', () => {
     });
   });
 
-  describe('stop', () => {
-    it('stops polling and closes the database', () => {
+  describe("stop", () => {
+    it("stops polling and closes the database", () => {
       testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
       djay = new DjayConnect({ databasePath: testDb.dbPath });
       djay.start();
@@ -246,57 +295,57 @@ describe('DjayConnect', () => {
       expect(djay.running).toBe(false);
     });
 
-    it('can be called when not running', () => {
+    it("can be called when not running", () => {
       djay = new DjayConnect();
       expect(() => djay!.stop()).not.toThrow();
     });
   });
 
-  describe('location enrichment', () => {
-    it('resolves filePath for a local track', () => {
+  describe("location enrichment", () => {
+    it("resolves filePath for a local track", () => {
       const localHistory = HISTORY_ITEM_FIXTURES.find(
-        (f) => f.expected.originSourceID === 'explorer',
+        (f) => f.expected.originSourceID === "explorer",
       )!;
       testDb = buildTestDatabase([localHistory], { seedLocations: true });
       djay = new DjayConnect({ databasePath: testDb.dbPath });
       const trackHandler = vi.fn();
-      djay.on('track', trackHandler);
+      djay.on("track", trackHandler);
 
       djay.start();
 
       expect(trackHandler).toHaveBeenCalledTimes(1);
       const track = trackHandler.mock.calls[0][0].track;
-      expect(track.titleID).toBe('307b767ff2463cce064180664e6b4c89');
+      expect(track.titleID).toBe("307b767ff2463cce064180664e6b4c89");
       expect(track.sourceURIs).toHaveLength(1);
       expect(track.sourceURIs?.[0]).toMatch(/^file:\/\//);
-      expect(track.filePath).toContain('Voodoo_People_(Pendulum_Mix).mp3');
+      expect(track.filePath).toContain("Voodoo_People_(Pendulum_Mix).mp3");
     });
 
-    it('exposes multiple sourceURIs for a multi-service streaming track', () => {
+    it("exposes multiple sourceURIs for a multi-service streaming track", () => {
       const goodCatch = HISTORY_ITEM_FIXTURES.find(
-        (f) => f.expected.title === 'Good Catch (Black Caviar Remix)',
+        (f) => f.expected.title === "Good Catch (Black Caviar Remix)",
       )!;
       testDb = buildTestDatabase([goodCatch], { seedLocations: true });
       djay = new DjayConnect({ databasePath: testDb.dbPath });
       const trackHandler = vi.fn();
-      djay.on('track', trackHandler);
+      djay.on("track", trackHandler);
 
       djay.start();
 
       const track = trackHandler.mock.calls[0][0].track;
       expect(track.sourceURIs).toEqual([
-        'soundcloud:tracks:1150488265',
-        'beatport:track:15949981',
+        "soundcloud:tracks:1150488265",
+        "beatport:track:15949981",
       ]);
       expect(track.filePath).toBeUndefined();
     });
 
-    it('emits the track unchanged when no location row is present', () => {
+    it("emits the track unchanged when no location row is present", () => {
       const anyHistory = HISTORY_ITEM_FIXTURES[0];
       testDb = buildTestDatabase([anyHistory]); // no seedLocations
       djay = new DjayConnect({ databasePath: testDb.dbPath });
       const trackHandler = vi.fn();
-      djay.on('track', trackHandler);
+      djay.on("track", trackHandler);
 
       djay.start();
 
@@ -307,21 +356,21 @@ describe('DjayConnect', () => {
     });
   });
 
-  describe('setPollInterval', () => {
-    it('enforces minimum interval', () => {
+  describe("setPollInterval", () => {
+    it("enforces minimum interval", () => {
       djay = new DjayConnect({ pollIntervalMs: 5000 });
       djay.setPollInterval(500);
       expect(djay.pollInterval).toBe(2000);
     });
 
-    it('restarts the timer when running', () => {
+    it("restarts the timer when running", () => {
       testDb = buildTestDatabase([HISTORY_ITEM_FIXTURES[0]]);
       djay = new DjayConnect({
         databasePath: testDb.dbPath,
         pollIntervalMs: 2000,
       });
       const pollHandler = vi.fn();
-      djay.on('poll', pollHandler);
+      djay.on("poll", pollHandler);
 
       djay.start();
       djay.setPollInterval(5000);

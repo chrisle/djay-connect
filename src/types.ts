@@ -1,6 +1,6 @@
-import EventEmitter from 'node:events';
-import type { StrictEventEmitter } from 'strict-event-emitter-types';
-import type { Logger } from './types/logger.js';
+import EventEmitter from "node:events";
+import type { StrictEventEmitter } from "strict-event-emitter-types";
+import type { Logger } from "./types/logger.js";
 
 /**
  * Configuration options for DjayConnect.
@@ -74,6 +74,15 @@ export type DjayReadyInfo = {
 export type DjayTrackPayload = {
   /** The track that was detected */
   track: DjayNowPlayingTrack;
+  /**
+   * True only for the seed track emitted synchronously on `start()`. It is the
+   * most-recent pre-existing history row — i.e. whatever was already playing or
+   * last played when monitoring began — not a new play. Consumers that
+   * broadcast live plays (overlay, Twitch, Discord) should skip it so a fresh
+   * connection never re-announces a stale track. Absent (falsy) for every
+   * genuinely new play detected by polling.
+   */
+  isInitial?: boolean;
 };
 
 /**
