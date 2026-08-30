@@ -142,14 +142,19 @@ export interface DjayHistoryItemFields {
 
 /**
  * Parse a historySessionItems blob into a typed record.
- * Returns `null` if the blob is missing required fields (title or artist).
+ *
+ * Returns `null` only when the item names neither a title nor an artist, since
+ * there is nothing to report about such a row. An item carrying just one of the
+ * two is kept: a music video — or any file whose tags were never filled in —
+ * routinely has a title and no artist, and requiring both here silently dropped
+ * every one of those plays before it could reach the caller (NP3-381).
  */
 export function parseHistorySessionItem(
   blob: Buffer,
 ): DjayHistoryItemFields | null {
   const title = extractString(blob, 'title');
   const artist = extractString(blob, 'artist');
-  if (!title || !artist) return null;
+  if (!title && !artist) return null;
 
   const uuid = extractString(blob, 'uuid') ?? '';
   const sessionUUID = extractString(blob, 'sessionUUID') ?? '';
@@ -165,8 +170,8 @@ export function parseHistorySessionItem(
     uuid,
     sessionUUID,
     titleID,
-    title,
-    artist,
+    title: title ?? '',
+    artist: artist ?? '',
     duration,
     deckNumber,
     startTime,
