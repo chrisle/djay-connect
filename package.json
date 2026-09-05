@@ -1,6 +1,6 @@
 {
   "name": "djay-connect",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Library to read djay Pro's MediaLibrary.db and emit track change events",
   "license": "MIT",
   "repository": {
