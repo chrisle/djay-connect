@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   detectDjayInstallation,
   getDefaultDatabasePath,
@@ -13,6 +13,26 @@ vi.mock('fs', () => ({
 import { existsSync } from 'fs';
 const mockExistsSync = vi.mocked(existsSync);
 
+const realPlatform = process.platform;
+
+/**
+ * djay Pro ships on macOS and Windows only, and the candidate list is empty
+ * anywhere else. Pinning the platform lets both supported layouts be asserted
+ * from any runner: CI is Linux, where the unpinned suite exercised nothing but
+ * the empty-candidate branch and failed on the one assertion that assumed a
+ * candidate existed.
+ */
+function pinPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', {
+    value: platform,
+    configurable: true,
+  });
+}
+
+afterEach(() => {
+  pinPlatform(realPlatform);
+});
+
 describe('detect', () => {
   describe('getDefaultDjayInstallPath', () => {
     it('points to the djay folder under Music', () => {
@@ -23,38 +43,52 @@ describe('detect', () => {
   });
 
   describe('getDefaultDatabasePaths', () => {
-    it('returns platform-specific MediaLibrary.db candidates', () => {
+    it('points at the .djayMediaLibrary bundle on macOS', () => {
+      pinPlatform('darwin');
       const paths = getDefaultDatabasePaths();
-      if (process.platform === 'darwin') {
-        expect(paths).toHaveLength(1);
-        expect(paths[0]).toContain('djay Media Library.djayMediaLibrary');
-        expect(paths[0]).toMatch(/MediaLibrary\.db$/);
-      } else if (process.platform === 'win32') {
-        expect(paths).toHaveLength(1);
-        expect(paths[0]).toContain('djay Media Library');
-        expect(paths[0]).toMatch(/MediaLibrary\.db$/);
-      } else {
-        expect(paths).toEqual([]);
-      }
+      expect(paths).toHaveLength(1);
+      expect(paths[0]).toContain('djay Media Library.djayMediaLibrary');
+      expect(paths[0]).toMatch(/MediaLibrary\.db$/);
+    });
+
+    it('points at the plain library folder on Windows', () => {
+      pinPlatform('win32');
+      const paths = getDefaultDatabasePaths();
+      expect(paths).toHaveLength(1);
+      expect(paths[0]).toContain('djay Media Library');
+      expect(paths[0]).not.toContain('.djayMediaLibrary');
+      expect(paths[0]).toMatch(/MediaLibrary\.db$/);
+    });
+
+    it('has no candidates on a platform djay Pro does not ship on', () => {
+      pinPlatform('linux');
+      expect(getDefaultDatabasePaths()).toEqual([]);
     });
   });
 
   describe('getDefaultDatabasePath', () => {
-    it('returns the first candidate when it exists', () => {
-      mockExistsSync.mockReturnValue(true);
-      const path = getDefaultDatabasePath();
-      expect(path).toMatch(/MediaLibrary\.db$/);
-    });
+    it.each(['darwin', 'win32'] as const)(
+      'returns the first candidate when it exists on %s',
+      (platform) => {
+        pinPlatform(platform);
+        mockExistsSync.mockReturnValue(true);
+        expect(getDefaultDatabasePath()).toMatch(/MediaLibrary\.db$/);
+      },
+    );
 
-    it('falls back to the first candidate when none exist', () => {
+    it.each(['darwin', 'win32'] as const)(
+      'falls back to the first candidate when none exist on %s',
+      (platform) => {
+        pinPlatform(platform);
+        mockExistsSync.mockReturnValue(false);
+        expect(getDefaultDatabasePath()).toBe(getDefaultDatabasePaths()[0]);
+      },
+    );
+
+    it('returns an empty string where there is no candidate to fall back to', () => {
+      pinPlatform('linux');
       mockExistsSync.mockReturnValue(false);
-      const path = getDefaultDatabasePath();
-      const [firstCandidate] = getDefaultDatabasePaths();
-      if (firstCandidate) {
-        expect(path).toBe(firstCandidate);
-      } else {
-        expect(path).toBe('');
-      }
+      expect(getDefaultDatabasePath()).toBe('');
     });
   });
 

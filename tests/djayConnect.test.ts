@@ -71,7 +71,42 @@ function buildTestDatabase(
   return { dbPath, cleanup, insertFixture };
 }
 
-describe("DjayConnect", () => {
+/**
+ * These tests open a real SQLite file, so they need a `better-sqlite3-multiple-
+ * ciphers` addon built for the Node ABI. A checkout that has been through the
+ * desktop app's `npm run rebuild` carries an Electron-ABI build of the very same
+ * file — the desktop resolves this package's own `node_modules` copy at runtime,
+ * so it has to stay that way — and every test below then dies on the same
+ * NODE_MODULE_VERSION error.
+ *
+ * Skip them in that one situation rather than reporting a dozen failures that
+ * say nothing about the code. Any other load error is a real one and is left to
+ * fail. CI installs with plain `npm ci` and always runs them.
+ */
+function abiMismatch(): string | null {
+  try {
+    new createDatabase(":memory:").close();
+    return null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes("NODE_MODULE_VERSION")
+      ? message.split("\n").join(" ")
+      : null;
+  }
+}
+
+const NATIVE_ABI_MISMATCH = abiMismatch();
+
+if (NATIVE_ABI_MISMATCH) {
+  console.warn(
+    `[djayConnect.test] skipping database-backed tests: ${NATIVE_ABI_MISMATCH}\n` +
+      `[djayConnect.test] this working copy is built for Electron. ` +
+      `Run "npm rebuild better-sqlite3-multiple-ciphers" here to test against Node, ` +
+      `then "npm run rebuild" in apps/desktop before launching the desktop app again.`,
+  );
+}
+
+describe.skipIf(NATIVE_ABI_MISMATCH !== null)("DjayConnect", () => {
   let djay: DjayConnect | undefined;
   let testDb: ReturnType<typeof buildTestDatabase> | undefined;
 
