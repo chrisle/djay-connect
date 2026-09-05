@@ -55,5 +55,8 @@
   },
   "overrides": {
     "rollup": ">=4.59.0"
+  },
+  "allowScripts": {
+    "better-sqlite3-multiple-ciphers": true
   }
 }

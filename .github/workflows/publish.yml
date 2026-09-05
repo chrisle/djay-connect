@@ -37,17 +37,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # better-sqlite3-multiple-ciphers publishes no prebuild for Node 24's ABI,
-      # and its install script fails quietly when the download 404s, leaving the
-      # database-backed tests with no addon to load at all. Build it here so
-      # they run for real instead of dying on a missing bindings file.
-      - name: Build the native SQLite addon for this Node version
-        run: npm rebuild better-sqlite3-multiple-ciphers
-        env:
-          # npm 12 rejects --build-from-source as an unknown flag; the setting
-          # has to reach node-gyp through the environment instead.
-          npm_config_build_from_source: 'true'
-
       - name: Run tests
         run: npm test
 
