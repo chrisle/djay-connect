@@ -1,0 +1,40 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - '**'
+      - '!main'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Mirror the publish job's npm, not just its Node. npm 12 blocks
+      # dependency install scripts unless allowScripts covers them, which is
+      # exactly what stopped better-sqlite3-multiple-ciphers from compiling and
+      # left the database tests with no addon — a gate on an older npm would
+      # have gone green and let that through.
+      - name: Upgrade npm to match the publish job
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
