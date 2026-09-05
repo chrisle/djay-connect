@@ -37,6 +37,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # better-sqlite3-multiple-ciphers publishes no prebuild for Node 24's ABI,
+      # and its install script fails quietly when the download 404s, leaving the
+      # database-backed tests with no addon to load at all. Build it here so
+      # they run for real instead of dying on a missing bindings file.
+      - name: Build the native SQLite addon for this Node version
+        run: npm rebuild better-sqlite3-multiple-ciphers --build-from-source
+
       - name: Run tests
         run: npm test
 
