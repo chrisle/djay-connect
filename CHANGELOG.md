@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.1.0
+
+- fix: djay Pro releases publish again instead of failing on every push
+- feat: djay Pro plays from YouTube are labelled as YouTube instead of an unknown source
+- fix: keep djay Pro history items that have no artist
+- build: bump better-sqlite3-multiple-ciphers to 12.11.1 for Electron 43
+- chore: require better-sqlite3-multiple-ciphers ^12.9.0 for Electron 43
+- fix: keep djay Pro overlays updating with live tracks instead of freezing on the previous session
+- chore: drop transient peer:true flags from lock file
+
+
 ## 2.0.0
 
 - Rewrite around SQLite for cross-platform support (macOS and Windows)
