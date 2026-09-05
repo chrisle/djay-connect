@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.2.1
+
+- ci: djay Pro connector changes are tested before they reach main
+
+
 ## v2.2.0
 
 - fix: djay Pro's SQLite driver is built again under npm 12, which blocks install scripts by default
