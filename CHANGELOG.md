@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.2.2
+
+- ci: CI comes from the shared connector-ci workflows
+
+
 ## v2.2.1
 
 - ci: djay Pro connector changes are tested before they reach main
