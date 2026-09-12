@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.2.3
+
+- fix: a djay Pro music video without tags now reaches Now Playing instead of being dropped (NP3-407)
+
+
 ## v2.2.2
 
 - ci: CI comes from the shared connector-ci workflows
