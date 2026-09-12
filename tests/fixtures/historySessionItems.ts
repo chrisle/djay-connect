@@ -215,3 +215,71 @@ export const HISTORY_ITEM_FIXTURES: HistoryItemFixture[] = [
 export function fixtureBuffer(fixture: HistoryItemFixture): Buffer {
   return Buffer.from(fixture.hex.replace(/\s+/g, ''), 'hex');
 }
+
+/** Offset of the header's count of tagged strings in a TSAF blob. */
+const TSAF_STRING_COUNT_OFFSET = 16;
+
+/**
+ * Remove a whole `0x08 <value> 0x00 0x08 <key> 0x00` field from a blob, so a
+ * real capture can stand in for a record djay wrote without that field. The
+ * header's count of tagged strings is decremented to match.
+ */
+export function withoutField(blob: Buffer, key: string): Buffer {
+  const keyTag = Buffer.concat([
+    Buffer.from([0x08]),
+    Buffer.from(key, 'ascii'),
+    Buffer.from([0x00]),
+  ]);
+  const keyStart = blob.indexOf(keyTag);
+  if (keyStart < 0) throw new Error(`no '${key}' field in this blob`);
+
+  // The value sits immediately before its key tag, tagged the same way. Its
+  // bytes are printable UTF-8, so the first 0x08 walking backwards starts it.
+  let valueStart = keyStart - 2;
+  while (valueStart >= 0 && blob[valueStart] !== 0x08) valueStart--;
+  if (valueStart < 0) throw new Error(`no value before the '${key}' tag`);
+
+  const out = Buffer.concat([
+    blob.subarray(0, valueStart),
+    blob.subarray(keyStart + keyTag.length),
+  ]);
+  out.writeUInt32LE(
+    out.readUInt32LE(TSAF_STRING_COUNT_OFFSET) - 2,
+    TSAF_STRING_COUNT_OFFSET,
+  );
+  return out;
+}
+
+/**
+ * The history row djay Pro on macOS writes for an untagged file added via My
+ * Files (e.g. a downloaded music video): no `title` or `artist` string at all,
+ * just the nested `ADCMediaItemTitleID` pointing at the media item. Built from
+ * a real Windows capture by dropping both strings and swapping in the wanted
+ * titleID; at 312 bytes it lands in the 284–316 byte range seen in the field
+ * (NP3-407).
+ */
+export function untaggedHistoryItem(
+  fixture: HistoryItemFixture,
+  titleID: string,
+): HistoryItemFixture {
+  if (!/^[0-9a-f]{32}$/.test(titleID)) {
+    throw new Error(`titleID must be 32 lowercase hex chars: ${titleID}`);
+  }
+  const stripped = withoutField(
+    withoutField(fixtureBuffer(fixture), 'artist'),
+    'title',
+  );
+  const marker = Buffer.concat([
+    Buffer.from([0x2b, 0x08]),
+    Buffer.from('ADCMediaItemTitleID', 'ascii'),
+    Buffer.from([0x00, 0x08]),
+  ]);
+  const markerPos = stripped.indexOf(marker);
+  if (markerPos < 0) throw new Error('no ADCMediaItemTitleID in this blob');
+  stripped.write(titleID, markerPos + marker.length, 'ascii');
+  return {
+    key: fixture.key,
+    hex: stripped.toString('hex'),
+    expected: { ...fixture.expected, title: '', artist: '' },
+  };
+}

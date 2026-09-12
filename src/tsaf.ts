@@ -143,22 +143,29 @@ export interface DjayHistoryItemFields {
 /**
  * Parse a historySessionItems blob into a typed record.
  *
- * Returns `null` only when the item names neither a title nor an artist, since
- * there is nothing to report about such a row. An item carrying just one of the
- * two is kept: a music video — or any file whose tags were never filled in —
- * routinely has a title and no artist, and requiring both here silently dropped
- * every one of those plays before it could reach the caller (NP3-381).
+ * Returns `null` only when the item names neither a title, an artist, nor a
+ * titleID, since there is nothing to report about — or look up for — such a
+ * row. An item carrying just one of title/artist is kept: a music video — or
+ * any file whose tags were never filled in — routinely has a title and no
+ * artist, and requiring both here silently dropped every one of those plays
+ * before it could reach the caller (NP3-381).
+ *
+ * An item with neither string but a titleID is kept too, with empty `title`
+ * and `artist`. djay Pro on macOS writes exactly that for an untagged file
+ * added via My Files (e.g. a downloaded music video): the strings live only in
+ * the `mediaItemTitleIDs` record the titleID points at, so the caller resolves
+ * them there (NP3-407).
  */
 export function parseHistorySessionItem(
   blob: Buffer,
 ): DjayHistoryItemFields | null {
   const title = extractString(blob, 'title');
   const artist = extractString(blob, 'artist');
-  if (!title && !artist) return null;
+  const titleID = extractTitleID(blob);
+  if (!title && !artist && !titleID) return null;
 
   const uuid = extractString(blob, 'uuid') ?? '';
   const sessionUUID = extractString(blob, 'sessionUUID') ?? '';
-  const titleID = extractTitleID(blob);
   const duration = extractDouble(blob, 'duration') ?? 0;
   const deckRaw = extractDouble(blob, 'deckNumber') ?? 0;
   const deckNumber = Number.isFinite(deckRaw) ? Math.round(deckRaw) : 0;
@@ -177,6 +184,26 @@ export function parseHistorySessionItem(
     startTime,
     originSourceID,
     isrc,
+  };
+}
+
+/** The title strings djay keeps in a `mediaItemTitleIDs` record. */
+export interface DjayMediaItemTitleFields {
+  title: string;
+  artist: string;
+}
+
+/**
+ * Parse a `mediaItemTitleIDs` blob — the record a history item's titleID
+ * points at. It carries the same tagged `title` / `artist` strings as a
+ * history row (verified against djay Pro for macOS: an untagged file has a
+ * `title` and no `artist`, a tagged one has both). Absent strings come back
+ * empty.
+ */
+export function parseMediaItemTitle(blob: Buffer): DjayMediaItemTitleFields {
+  return {
+    title: extractString(blob, 'title') ?? '',
+    artist: extractString(blob, 'artist') ?? '',
   };
 }
 
