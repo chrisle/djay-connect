@@ -173,8 +173,8 @@ All fields share the TSAF encoding rules below. "Type" is the TSAF tag used.
 | `uuid` | string | Per-item UUID (matches one entry in the parent session's `itemUUIDs`) |
 | `sessionUUID` | string | Backreference to the enclosing `historySessions` row |
 | `titleID` | object ref | Nested `ADCMediaItemTitleID` — carries the 32-hex titleID that joins into `mediaItem*` and `*MediaItemLocations` |
-| `title` | string | Denormalized title (also lives on the title ID) |
-| `artist` | string | Denormalized artist |
+| `title` | string | Denormalized title (also lives on the title ID). **Absent** on macOS for an untagged file added via My Files — read it from `mediaItemTitleIDs` instead, and fall back to the file name (what djay displays) |
+| `artist` | string | Denormalized artist. Absent when the file has no artist tag |
 | `duration` | double | Track length in seconds |
 | `deckNumber` | double | 1, 2, 3, or 4 — which deck the track was loaded on |
 | `startTime` | date | When the track was started |
@@ -360,12 +360,18 @@ NSKeyedArchiver, not protobuf — Algoriddim-internal.
 
 ```
 TSAF <2 bytes version> <2 bytes version>    ; header
-<uint32 value-count> <uint32 ?>              ; record header (little-endian)
+<uint32 ?> <uint32 0> <uint32 string-count>  ; record header (little-endian)
 <class-marker>
 <field0-value> <field0-key-tag>
 <field1-value> <field1-key-tag>
 ...
 ```
+
+The record header is 20 bytes in total. Its last uint32 is the number of
+`0x08 <utf8> 0x00` tagged strings in the record — keys, values and class names
+alike (17 for a full history item, 15 without an `artist` field). The first
+uint32 varies by class (3 for history items, 4 for locations, 1 for title IDs);
+its meaning is not known.
 
 A **class marker** is the tag byte `0x2B` followed by `0x08 <ascii-class-name> 0x00`
 (e.g. `ADCHistorySessionItem`, `ADCMediaItemLocation`).
@@ -397,7 +403,7 @@ padding. This is how `src/tsaf.ts` extracts `duration`, `deckNumber`,
 ```
 54 53 41 46 03 00 03 00                      ; TSAF magic + version
 03 00 00 00 00 00 00 00                      ; (record header)
-11 00 00 00                                  ; 17 fields (uint32 LE)
+11 00 00 00                                  ; 17 tagged strings (uint32 LE)
 2B 08 'ADCHistorySessionItem' 00              ; class marker
 08 '<item-uuid>' 00 08 'uuid' 00              ; field 1: uuid
 08 '<session-uuid>' 00 08 'sessionUUID' 00    ; field 2: sessionUUID

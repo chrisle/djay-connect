@@ -6,40 +6,22 @@ import {
   extractString,
   extractTitleID,
   parseHistorySessionItem,
+  parseMediaItemTitle,
 } from '../src/tsaf';
 import {
   HISTORY_ITEM_FIXTURES,
   fixtureBuffer,
+  untaggedHistoryItem,
+  withoutField,
 } from './fixtures/historySessionItems';
+import {
+  MEDIA_ITEM_TITLE_FIXTURES,
+  mediaItemTitleBuffer,
+} from './fixtures/mediaItemTitleIDs';
 import {
   LOCATION_FIXTURES,
   locationBuffer,
 } from './fixtures/mediaItemLocations';
-
-/**
- * Remove a whole `0x08 <value> 0x00 0x08 <key> 0x00` field from a blob, so a
- * real capture can stand in for a record djay wrote without that field.
- */
-function withoutField(blob: Buffer, key: string): Buffer {
-  const keyTag = Buffer.concat([
-    Buffer.from([0x08]),
-    Buffer.from(key, 'ascii'),
-    Buffer.from([0x00]),
-  ]);
-  const keyStart = blob.indexOf(keyTag);
-  if (keyStart < 0) throw new Error(`no '${key}' field in this blob`);
-
-  // The value sits immediately before its key tag, tagged the same way. Its
-  // bytes are printable UTF-8, so the first 0x08 walking backwards starts it.
-  let valueStart = keyStart - 2;
-  while (valueStart >= 0 && blob[valueStart] !== 0x08) valueStart--;
-  if (valueStart < 0) throw new Error(`no value before the '${key}' tag`);
-
-  return Buffer.concat([
-    blob.subarray(0, valueStart),
-    blob.subarray(keyStart + keyTag.length),
-  ]);
-}
 
 describe('tsaf', () => {
   describe('parseHistorySessionItem', () => {
@@ -65,9 +47,33 @@ describe('tsaf', () => {
       },
     );
 
-    it('returns null when title and artist are both missing', () => {
+    it('returns null when title, artist and titleID are all missing', () => {
       const emptyBlob = Buffer.from('TSAFnothinguseful');
       expect(parseHistorySessionItem(emptyBlob)).toBeNull();
+    });
+
+    it('keeps an item that has only a titleID, with empty strings', () => {
+      // What djay Pro on macOS writes for an untagged file added via My
+      // Files: the title lives in mediaItemTitleIDs, not in the history row.
+      const fixture = untaggedHistoryItem(
+        HISTORY_ITEM_FIXTURES[0],
+        '0e64b1accf11337d40ca05b1800d64f3',
+      );
+      const blob = fixtureBuffer(fixture);
+      expect(blob.length).toBeGreaterThanOrEqual(284);
+      expect(blob.length).toBeLessThanOrEqual(316);
+
+      const parsed = parseHistorySessionItem(blob);
+
+      expect(parsed).not.toBeNull();
+      expect(parsed!.title).toBe('');
+      expect(parsed!.artist).toBe('');
+      expect(parsed!.titleID).toBe('0e64b1accf11337d40ca05b1800d64f3');
+      // The rest of the record still decodes around the gap.
+      expect(parsed!.deckNumber).toBe(1);
+      expect(parsed!.duration).toBeCloseTo(307.879, 3);
+      expect(parsed!.originSourceID).toBe('explorer');
+      expect(parsed!.uuid).toBe('212C5976-EB1D-8D0D-71F0-8E5D4B2ABA12');
     });
 
     it('keeps an item that has a title but no artist', () => {
@@ -99,6 +105,30 @@ describe('tsaf', () => {
       expect(parsed).not.toBeNull();
       expect(parsed!.artist).toBe('The Prodigy');
       expect(parsed!.title).toBe('');
+    });
+  });
+
+  describe('parseMediaItemTitle', () => {
+    it.each(MEDIA_ITEM_TITLE_FIXTURES)(
+      'reads the strings djay shows for $expected.title',
+      (fixture) => {
+        const parsed = parseMediaItemTitle(mediaItemTitleBuffer(fixture));
+        expect(parsed.title).toBe(fixture.expected.title);
+        expect(parsed.artist).toBe(fixture.expected.artist);
+      },
+    );
+
+    it('is keyed by the titleID it carries', () => {
+      for (const fixture of MEDIA_ITEM_TITLE_FIXTURES) {
+        expect(extractTitleID(mediaItemTitleBuffer(fixture))).toBe(fixture.key);
+      }
+    });
+
+    it('returns empty strings for a blob with no title fields', () => {
+      expect(parseMediaItemTitle(Buffer.from('TSAFnothinguseful'))).toEqual({
+        title: '',
+        artist: '',
+      });
     });
   });
 

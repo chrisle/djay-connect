@@ -7,22 +7,29 @@ import { DjayConnect } from "../src/djayConnect";
 import {
   HISTORY_ITEM_FIXTURES,
   fixtureBuffer,
+  untaggedHistoryItem,
+  withoutField,
 } from "./fixtures/historySessionItems";
 import {
   LOCATION_FIXTURES,
   locationBuffer,
 } from "./fixtures/mediaItemLocations";
+import {
+  MEDIA_ITEM_TITLE_FIXTURES,
+  mediaItemTitleBuffer,
+} from "./fixtures/mediaItemTitleIDs";
 
 /**
  * Build a throwaway SQLite file with just enough of djay Pro's YapDatabase
  * schema for DjayConnect to read, then seed it with the provided fixtures.
  * Optionally seeds `localMediaItemLocations` / `globalMediaItemLocations`
  * rows from LOCATION_FIXTURES so integration tests can exercise the
- * titleID → filePath / sourceURIs join.
+ * titleID → filePath / sourceURIs join, and `mediaItemTitleIDs` rows from
+ * MEDIA_ITEM_TITLE_FIXTURES for the titleID → title / artist join.
  */
 function buildTestDatabase(
   seedFixtures: typeof HISTORY_ITEM_FIXTURES,
-  options: { seedLocations?: boolean } = {},
+  options: { seedLocations?: boolean; seedMediaItemTitles?: boolean } = {},
 ): {
   dbPath: string;
   cleanup: () => void;
@@ -52,6 +59,12 @@ function buildTestDatabase(
   if (options.seedLocations) {
     for (const loc of LOCATION_FIXTURES) {
       insert.run(loc.collection, loc.key, locationBuffer(loc));
+    }
+  }
+
+  if (options.seedMediaItemTitles) {
+    for (const item of MEDIA_ITEM_TITLE_FIXTURES) {
+      insert.run("mediaItemTitleIDs", item.key, mediaItemTitleBuffer(item));
     }
   }
 
@@ -388,6 +401,193 @@ describe.skipIf(NATIVE_ABI_MISMATCH !== null)("DjayConnect", () => {
       expect(track.sourceURIs).toBeUndefined();
       expect(track.filePath).toBeUndefined();
       expect(track.title).toBe(anyHistory.expected.title);
+    });
+  });
+
+  describe("history rows without title strings (NP3-407)", () => {
+    // djay Pro on macOS writes a history row with no title/artist for an
+    // untagged file added via My Files; the strings live in mediaItemTitleIDs.
+    const voodoo = HISTORY_ITEM_FIXTURES[0];
+    const untaggedFile = MEDIA_ITEM_TITLE_FIXTURES[0]; // "satisfaction", no artist
+    const taggedFile = MEDIA_ITEM_TITLE_FIXTURES[1]; // Cotton Eye Joe / Rednex
+    const voodooLocation = LOCATION_FIXTURES[0]; // file:// row for Voodoo People
+
+    it("fills the title from mediaItemTitleIDs when the media item has no artist", () => {
+      const row = untaggedHistoryItem(voodoo, untaggedFile.key);
+      testDb = buildTestDatabase([row], { seedMediaItemTitles: true });
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
+      const trackHandler = vi.fn();
+      djay.on("track", trackHandler);
+
+      djay.start();
+
+      expect(trackHandler).toHaveBeenCalledTimes(1);
+      expect(trackHandler.mock.calls[0][0].track).toEqual(
+        expect.objectContaining({
+          title: "satisfaction",
+          artist: "",
+          titleID: untaggedFile.key,
+          deckNumber: 1,
+          uuid: voodoo.expected.uuid,
+        }),
+      );
+    });
+
+    it("fills title and artist from mediaItemTitleIDs when the media item has both", () => {
+      const row = untaggedHistoryItem(voodoo, taggedFile.key);
+      testDb = buildTestDatabase([row], { seedMediaItemTitles: true });
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
+      const trackHandler = vi.fn();
+      djay.on("track", trackHandler);
+
+      djay.start();
+
+      expect(trackHandler).toHaveBeenCalledTimes(1);
+      expect(trackHandler.mock.calls[0][0].track).toEqual(
+        expect.objectContaining({
+          title: "Cotton Eye Joe (TRIODE Remix)",
+          artist: "Rednex",
+          titleID: taggedFile.key,
+        }),
+      );
+    });
+
+    it("falls back to the file name when there is no mediaItemTitleIDs row", () => {
+      const row = untaggedHistoryItem(voodoo, voodooLocation.key);
+      testDb = buildTestDatabase([row], { seedLocations: true });
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
+      const trackHandler = vi.fn();
+      djay.on("track", trackHandler);
+
+      djay.start();
+
+      expect(trackHandler).toHaveBeenCalledTimes(1);
+      const track = trackHandler.mock.calls[0][0].track;
+      expect(track.title).toBe("14187302_Voodoo_People_(Pendulum_Mix)");
+      expect(track.artist).toBe("");
+      expect(track.filePath).toContain("Voodoo_People_(Pendulum_Mix).mp3");
+      expect(track.sourceURIs).toEqual(voodooLocation.expected.sourceURIs);
+    });
+
+    it("rescues a live play, logging at debug rather than warning", () => {
+      testDb = buildTestDatabase([voodoo], { seedMediaItemTitles: true });
+      const logger = {
+        trace: vi.fn(),
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      };
+      djay = new DjayConnect({
+        databasePath: testDb.dbPath,
+        pollIntervalMs: 2000,
+        logger,
+      });
+      const trackHandler = vi.fn();
+      djay.on("track", trackHandler);
+
+      djay.start();
+      expect(trackHandler).toHaveBeenCalledTimes(1); // initial seed track
+
+      testDb.insertFixture(untaggedHistoryItem(voodoo, untaggedFile.key));
+      vi.advanceTimersByTime(2000);
+
+      expect(trackHandler).toHaveBeenCalledTimes(2);
+      expect(trackHandler).toHaveBeenLastCalledWith({
+        track: expect.objectContaining({ title: "satisfaction", artist: "" }),
+      });
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(
+        expect.stringContaining("via mediaItemTitleIDs"),
+      );
+    });
+
+    it("drops the row when nothing resolves, without the 'Could not parse' warning", () => {
+      // titleID points nowhere: no mediaItemTitleIDs row, no location row.
+      const row = untaggedHistoryItem(
+        voodoo,
+        "ffffffffffffffffffffffffffffffff",
+      );
+      testDb = buildTestDatabase([voodoo]);
+      const logger = {
+        trace: vi.fn(),
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      };
+      djay = new DjayConnect({
+        databasePath: testDb.dbPath,
+        pollIntervalMs: 2000,
+        logger,
+      });
+      const trackHandler = vi.fn();
+      djay.on("track", trackHandler);
+
+      djay.start();
+      testDb.insertFixture(row);
+      vi.advanceTimersByTime(2000);
+
+      expect(trackHandler).toHaveBeenCalledTimes(1); // seed track only
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn.mock.calls[0][0]).toContain("resolves to none");
+      expect(logger.warn.mock.calls[0][0]).not.toContain("Could not parse");
+    });
+
+    it("still warns 'Could not parse' for a row with no titleID either", () => {
+      testDb = buildTestDatabase([voodoo]);
+      const logger = {
+        trace: vi.fn(),
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      };
+      djay = new DjayConnect({
+        databasePath: testDb.dbPath,
+        pollIntervalMs: 2000,
+        logger,
+      });
+      const trackHandler = vi.fn();
+      djay.on("track", trackHandler);
+
+      djay.start();
+      const raw = new createDatabase(testDb.dbPath);
+      raw
+        .prepare(
+          `INSERT INTO database2 (collection, key, data) VALUES (?, ?, ?)`,
+        )
+        .run("historySessionItems", "junk-key", Buffer.from("TSAFnothing"));
+      raw.close();
+      vi.advanceTimersByTime(2000);
+
+      expect(trackHandler).toHaveBeenCalledTimes(1); // seed track only
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn.mock.calls[0][0]).toContain(
+        "Could not parse historySessionItem junk-key",
+      );
+    });
+
+    it("keeps a row that has a title but no artist, with no lookup (NP3-381)", () => {
+      const titleOnly = {
+        ...voodoo,
+        hex: withoutField(fixtureBuffer(voodoo), "artist").toString("hex"),
+      };
+      // No mediaItemTitleIDs or location rows: the history row is enough.
+      testDb = buildTestDatabase([titleOnly]);
+      djay = new DjayConnect({ databasePath: testDb.dbPath });
+      const trackHandler = vi.fn();
+      djay.on("track", trackHandler);
+
+      djay.start();
+
+      expect(trackHandler).toHaveBeenCalledTimes(1);
+      expect(trackHandler.mock.calls[0][0].track).toEqual(
+        expect.objectContaining({
+          title: "Voodoo People (Pendulum Mix)",
+          artist: "",
+        }),
+      );
     });
   });
 

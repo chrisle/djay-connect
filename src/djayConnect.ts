@@ -9,14 +9,18 @@
 
 import EventEmitter from "node:events";
 import { existsSync } from "node:fs";
+import { win32 as win32Path } from "node:path";
 import createDatabase, {
   type Database as BetterSqliteDatabase,
+  type Statement,
 } from "better-sqlite3-multiple-ciphers";
 import { getDefaultDatabasePath } from "./detect.js";
 import {
   extractSourceURIs,
   parseHistorySessionItem,
+  parseMediaItemTitle,
   type DjayHistoryItemFields,
+  type DjayMediaItemTitleFields,
 } from "./tsaf.js";
 import { type Logger, noopLogger } from "./types/logger.js";
 import type {
@@ -27,6 +31,10 @@ import type {
 
 interface LocationRow {
   collection: "localMediaItemLocations" | "globalMediaItemLocations";
+  data: Buffer;
+}
+
+interface MediaItemTitleRow {
   data: Buffer;
 }
 
@@ -55,6 +63,15 @@ function fileUriToPath(uri: string): string | undefined {
   return path;
 }
 
+/**
+ * The name djay Pro shows for a file that carries no title tag: its file name
+ * without the extension. Accepts both `/` and `\` separators so the decoded
+ * path resolves the same way whichever platform wrote the library.
+ */
+function fileNameTitle(filePath: string): string {
+  return win32Path.parse(filePath).name;
+}
+
 const MIN_POLL_INTERVAL = 2000;
 const DEFAULT_POLL_INTERVAL = 2000;
 
@@ -73,6 +90,11 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
   private databasePath: string;
   private logger: Logger;
   private db: BetterSqliteDatabase | null = null;
+  private locationStatement: Statement<[string], LocationRow> | null = null;
+  private mediaItemTitleStatement: Statement<
+    [string],
+    MediaItemTitleRow
+  > | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private lastRowId: number = 0;
   private isRunning: boolean = false;
@@ -142,6 +164,8 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
         this.logger.warn("Error closing database: %s", String(err));
       }
       this.db = null;
+      this.locationStatement = null;
+      this.mediaItemTitleStatement = null;
     }
     this.lastRowId = 0;
     this.isRunning = false;
@@ -184,6 +208,20 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
     // read_uncommitted lets us observe writes that haven't been checkpointed
     // yet, so new history rows appear in near real time.
     this.db.pragma("read_uncommitted = true");
+
+    // Prepared once per open: both run for every history row we enrich.
+    this.locationStatement = this.db.prepare<[string], LocationRow>(
+      `SELECT collection, data
+         FROM database2
+        WHERE collection IN ('localMediaItemLocations','globalMediaItemLocations')
+          AND key = ?`,
+    );
+    this.mediaItemTitleStatement = this.db.prepare<[string], MediaItemTitleRow>(
+      `SELECT data
+         FROM database2
+        WHERE collection = 'mediaItemTitleIDs'
+          AND key = ?`,
+    );
   }
 
   private poll(): void {
@@ -211,7 +249,12 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
           continue;
         }
         const track = this.toTrack(fields);
-        if (!track) continue;
+        if (!track) {
+          this.logger.warn(
+            `historySessionItem ${row.key} names no title, and titleID ${fields.titleID} resolves to none either`,
+          );
+          continue;
+        }
         this.logger.debug(
           `New track: ${track.artist} - ${track.title} [deck ${track.deckNumber}]`,
         );
@@ -263,7 +306,6 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
   }
 
   private toTrack(fields: DjayHistoryItemFields): DjayNowPlayingTrack | null {
-    if (!fields.title && !fields.artist) return null;
     const track: DjayNowPlayingTrack = {
       title: fields.title,
       artist: fields.artist,
@@ -277,9 +319,23 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
       isrc: fields.isrc,
     };
 
-    // Enrich with location data (file path or streaming URIs) when we can
-    // resolve the titleID against the *MediaItemLocations collections.
     if (fields.titleID) {
+      // A history row with no strings at all still points at its media item,
+      // and that record carries the title djay displays for the file. djay Pro
+      // on macOS writes such rows for untagged files added via My Files.
+      if (!track.title && !track.artist) {
+        const named = this.readMediaItemTitle(fields.titleID);
+        if (named) {
+          track.title = named.title;
+          track.artist = named.artist;
+          this.logger.debug(
+            `Resolved historySessionItem ${fields.uuid} via mediaItemTitleIDs ${fields.titleID}`,
+          );
+        }
+      }
+
+      // Enrich with location data (file path or streaming URIs) when we can
+      // resolve the titleID against the *MediaItemLocations collections.
       const uris = this.readSourceURIs(fields.titleID);
       if (uris.length > 0) {
         track.sourceURIs = uris;
@@ -293,9 +349,37 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
           }
         }
       }
+
+      // Last resort, and what djay itself shows for a file with no title tag.
+      if (!track.title && track.filePath) {
+        track.title = fileNameTitle(track.filePath);
+        this.logger.debug(
+          `Resolved historySessionItem ${fields.uuid} from its file name: ${track.title}`,
+        );
+      }
     }
 
+    if (!track.title && !track.artist) return null;
     return track;
+  }
+
+  /**
+   * Look up the `mediaItemTitleIDs` record for a titleID and return the title
+   * strings it carries, or null when djay has no such record.
+   */
+  private readMediaItemTitle(titleID: string): DjayMediaItemTitleFields | null {
+    if (!this.mediaItemTitleStatement) return null;
+    try {
+      const row = this.mediaItemTitleStatement.get(titleID);
+      if (!row) return null;
+      const named = parseMediaItemTitle(row.data);
+      return named.title || named.artist ? named : null;
+    } catch (err) {
+      this.logger.warn(
+        `Failed to resolve mediaItemTitleIDs ${titleID}: ${String(err)}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -304,16 +388,9 @@ export class DjayConnect extends (EventEmitter as new () => TypedEmitter) {
    * Returns every URI recorded for the track — can be empty, one, or many.
    */
   private readSourceURIs(titleID: string): string[] {
-    if (!this.db) return [];
+    if (!this.locationStatement) return [];
     try {
-      const row = this.db
-        .prepare<[string], LocationRow>(
-          `SELECT collection, data
-             FROM database2
-            WHERE collection IN ('localMediaItemLocations','globalMediaItemLocations')
-              AND key = ?`,
-        )
-        .get(titleID);
+      const row = this.locationStatement.get(titleID);
       if (!row) return [];
       return extractSourceURIs(row.data);
     } catch (err) {
