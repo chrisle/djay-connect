@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.2.4
+
+- ci: retire release.js so fixes pushed to main reach npm (NP3-461)
+
+
 ## v2.2.3
 
 - fix: a djay Pro music video without tags now reaches Now Playing instead of being dropped (NP3-407)
